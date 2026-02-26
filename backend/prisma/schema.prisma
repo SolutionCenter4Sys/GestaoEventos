@@ -1,0 +1,464 @@
+// Prisma Schema - Plataforma de Gestão de Eventos
+// Banco: PostgreSQL (Supabase) - DATABASE_URL no .env
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// EP-08: AUTENTICAÇÃO E CONTROLE DE ACESSO
+// ============================================
+
+enum PerfilUsuario {
+  ADMIN
+  MARKETING
+  VENDAS
+  PROFESSOR
+  PARTICIPANTE
+  PACIENTE_MODELO
+}
+
+model Usuario {
+  id                        String    @id @default(uuid()) @db.Uuid
+  nome                      String    @db.VarChar(200)
+  email                     String    @unique @db.VarChar(255)
+  senhaHash                 String    @db.VarChar(255)
+  perfil                    PerfilUsuario
+  ativo                     Boolean   @default(true)
+  bloqueadoAte              DateTime? @db.Timestamp()
+  tentativasLoginFalhas     Int       @default(0)
+  ultimaTentativaLogin      DateTime? @db.Timestamp()
+  
+  // 2FA
+  twoFactorHabilitado       Boolean   @default(false)
+  twoFactorSecret           String?   @db.VarChar(255)
+  twoFactorHabilitadoEm     DateTime? @db.Timestamp()
+  
+  foto                      String?   @db.VarChar(500)
+  
+  criadoEm                  DateTime  @default(now()) @db.Timestamp()
+  atualizadoEm              DateTime  @updatedAt @db.Timestamp()
+  
+  // Relacionamentos
+  refreshTokens             RefreshToken[]
+  logsAutenticacao          LogAutenticacao[]
+  solicitacoesCriadas       Solicitacao[] @relation("SolicitacaoCriador")
+  eventosLecionados         Evento[] @relation("EventoProfessor")
+  inscricoes                Inscricao[]
+  pacientesModeloCadastrados PacienteModelo[]
+  
+  @@index([email])
+  @@map("usuarios")
+}
+
+model RefreshToken {
+  id         String    @id @default(uuid()) @db.Uuid
+  usuarioId  String    @db.Uuid
+  token      String    @unique @db.VarChar(500)
+  expiraEm   DateTime  @db.Timestamp()
+  revogado   Boolean   @default(false)
+  criadoEm   DateTime  @default(now()) @db.Timestamp()
+  
+  usuario    Usuario   @relation(fields: [usuarioId], references: [id], onDelete: Cascade)
+  
+  @@index([usuarioId])
+  @@index([token])
+  @@map("refresh_tokens")
+}
+
+model TokenRecuperacaoSenha {
+  id             String    @id @default(uuid()) @db.Uuid
+  usuarioId      String    @db.Uuid
+  token          String    @unique @db.VarChar(500)
+  criadoEm       DateTime  @default(now()) @db.Timestamp()
+  expiraEm       DateTime  @db.Timestamp()
+  usado          Boolean   @default(false)
+  usadoEm        DateTime? @db.Timestamp()
+  ipSolicitacao  String?   @db.VarChar(45)
+  
+  @@index([token])
+  @@index([usuarioId])
+  @@map("tokens_recuperacao_senha")
+}
+
+model CodigoRecuperacao2FA {
+  id        Int       @id @default(autoincrement())
+  usuarioId String    @db.Uuid
+  codigo    String    @db.VarChar(255) // Hash do código
+  usado     Boolean   @default(false)
+  usadoEm   DateTime? @db.Timestamp()
+  criadoEm  DateTime  @default(now()) @db.Timestamp()
+  
+  @@index([usuarioId])
+  @@index([codigo])
+  @@map("codigos_recuperacao_2fa")
+}
+
+enum TipoEventoAuth {
+  LOGIN_SUCESSO
+  LOGIN_FALHA
+  LOGOUT
+  SENHA_ALTERADA
+  TWO_FA_HABILITADO
+  TWO_FA_DESABILITADO
+  ACESSO_NEGADO
+  PERFIL_ALTERADO
+}
+
+model LogAutenticacao {
+  id            Int             @id @default(autoincrement())
+  usuarioId     String?         @db.Uuid
+  email         String          @db.VarChar(255)
+  tipoEvento    TipoEventoAuth
+  ipOrigem      String          @db.VarChar(45)
+  userAgent     String?         @db.Text
+  pais          String?         @db.Char(2)
+  cidade        String?         @db.VarChar(100)
+  sucesso       Boolean
+  motivoFalha   String?         @db.VarChar(255)
+  metadados     Json?
+  timestamp     DateTime        @default(now()) @db.Timestamp()
+  
+  usuario       Usuario?        @relation(fields: [usuarioId], references: [id], onDelete: SetNull)
+  
+  @@index([usuarioId])
+  @@index([email])
+  @@index([timestamp(sort: Desc)])
+  @@index([ipOrigem])
+  @@index([tipoEvento])
+  @@map("logs_autenticacao")
+}
+
+// ============================================
+// EP-01: SOLICITAÇÕES DE EVENTOS
+// ============================================
+
+enum StatusSolicitacao {
+  PENDENTE
+  EM_ANALISE
+  APROVADA
+  REPROVADA
+  CANCELADA
+}
+
+model Solicitacao {
+  id                  String             @id @default(uuid()) @db.Uuid
+  titulo              String             @db.VarChar(200)
+  descricao           String             @db.Text
+  justificativa       String             @db.Text
+  publicoAlvo         String             @db.Text
+  capacidadeEstimada  Int
+  dataPreferencial    DateTime           @db.Date
+  horaPreferencial    String             @db.VarChar(5)
+  duracaoHoras        Int
+  localSugerido       String?            @db.VarChar(200)
+  status              StatusSolicitacao  @default(PENDENTE)
+  motivoReprovacao    String?            @db.Text
+  
+  solicitanteId       String             @db.Uuid
+  analisadoPorId      String?            @db.Uuid
+  analisadoEm         DateTime?          @db.Timestamp()
+  
+  criadoEm            DateTime           @default(now()) @db.Timestamp()
+  atualizadoEm        DateTime           @updatedAt @db.Timestamp()
+  
+  eventoId            String?            @unique @db.Uuid
+  
+  solicitante         Usuario            @relation("SolicitacaoCriador", fields: [solicitanteId], references: [id])
+  evento              Evento?            @relation("EventoDeSolicitacao")
+  
+  @@index([solicitanteId])
+  @@index([status])
+  @@index([dataPreferencial])
+  @@map("solicitacoes")
+}
+
+// ============================================
+// EP-02: GESTÃO DE EVENTOS
+// ============================================
+
+enum StatusEvento {
+  RASCUNHO
+  PUBLICADO
+  EM_ANDAMENTO
+  CONCLUIDO
+  CANCELADO
+}
+
+model Evento {
+  id                    String         @id @default(uuid()) @db.Uuid
+  nome                  String         @db.VarChar(200)
+  descricao             String         @db.Text
+  dataInicio            DateTime       @db.Timestamp()
+  dataFim               DateTime       @db.Timestamp()
+  local                 String         @db.VarChar(200)
+  endereco              String?        @db.Text
+  capacidadeMaxima      Int
+  capacidadeAtual       Int            @default(0)
+  publicado             Boolean        @default(false)
+  status                StatusEvento   @default(RASCUNHO)
+  
+  objetivos             String?        @db.Text
+  programacao           String?        @db.Text
+  informacoesAdicionais String?        @db.Text
+  
+  professorId           String?        @db.Uuid
+  solicitacaoId         String?        @unique @db.Uuid
+  
+  criadoEm              DateTime       @default(now()) @db.Timestamp()
+  atualizadoEm          DateTime       @updatedAt @db.Timestamp()
+  
+  professor             Usuario?       @relation("EventoProfessor", fields: [professorId], references: [id])
+  solicitacao           Solicitacao?   @relation("EventoDeSolicitacao", fields: [solicitacaoId], references: [id])
+  
+  inscricoes            Inscricao[]
+  pacientesModelo       PacienteModelo[]
+  certificados          Certificado[]
+  
+  @@index([dataInicio])
+  @@index([status])
+  @@index([publicado])
+  @@index([professorId])
+  @@map("eventos")
+}
+
+// ============================================
+// EP-03: INSCRIÇÕES E PARTICIPANTES
+// ============================================
+
+enum StatusInscricao {
+  PENDENTE
+  CONFIRMADA
+  CANCELADA
+  NO_SHOW
+  PRESENTE
+}
+
+model Inscricao {
+  id              String           @id @default(uuid()) @db.Uuid
+  eventoId        String           @db.Uuid
+  participanteId  String           @db.Uuid
+  cpf             String           @db.VarChar(11)
+  telefone        String           @db.VarChar(20)
+  status          StatusInscricao  @default(CONFIRMADA)
+  qrCode          String           @unique @db.Uuid
+  checkinEm       DateTime?        @db.Timestamp()
+  
+  criadoEm        DateTime         @default(now()) @db.Timestamp()
+  atualizadoEm    DateTime         @updatedAt @db.Timestamp()
+  
+  evento          Evento           @relation(fields: [eventoId], references: [id], onDelete: Cascade)
+  participante    Usuario          @relation(fields: [participanteId], references: [id])
+  certificado     Certificado?
+  
+  @@unique([cpf, eventoId])
+  @@index([eventoId])
+  @@index([participanteId])
+  @@index([qrCode])
+  @@map("inscricoes")
+}
+
+// ============================================
+// EP-04: CERTIFICADOS
+// ============================================
+
+enum StatusCertificado {
+  PENDENTE
+  GERADO
+  ENVIADO
+  ERRO
+}
+
+model Certificado {
+  id              String             @id @default(uuid()) @db.Uuid
+  inscricaoId     String             @unique @db.Uuid
+  eventoId        String             @db.Uuid
+  participanteNome String            @db.VarChar(200)
+  eventoNome      String             @db.VarChar(200)
+  dataEvento      DateTime           @db.Date
+  cargaHoraria    Int
+  urlPdf          String?            @db.VarChar(500)
+  status          StatusCertificado  @default(PENDENTE)
+  geradoEm        DateTime?          @db.Timestamp()
+  enviadoEm       DateTime?          @db.Timestamp()
+  
+  criadoEm        DateTime           @default(now()) @db.Timestamp()
+  
+  inscricao       Inscricao          @relation(fields: [inscricaoId], references: [id], onDelete: Cascade)
+  evento          Evento             @relation(fields: [eventoId], references: [id])
+  
+  @@index([inscricaoId])
+  @@index([eventoId])
+  @@index([status])
+  @@map("certificados")
+}
+
+// ============================================
+// EP-05: PACIENTES MODELO (LGPD)
+// ============================================
+
+model PacienteModelo {
+  id                   String    @id @default(uuid()) @db.Uuid
+  nome                 String    @db.VarChar(200)
+  cpf                  String    @db.VarChar(11)
+  dataNascimento       DateTime  @db.Date
+  email                String    @db.VarChar(255)
+  telefone             String    @db.VarChar(20)
+  endereco             String?   @db.Text
+  
+  // Dados sensíveis (CRIPTOGRAFADOS no backend antes de salvar)
+  historicoSaude       String?   @db.Text
+  restricoesAlergias   String?   @db.Text
+  
+  eventoId             String    @db.Uuid
+  criadoPor            String    @db.Uuid
+  criadoEm             DateTime  @default(now()) @db.Timestamp()
+  atualizadoEm         DateTime  @updatedAt @db.Timestamp()
+  deletedAt            DateTime? @db.Timestamp()
+  
+  evento               Evento    @relation(fields: [eventoId], references: [id])
+  criador              Usuario   @relation(fields: [criadoPor], references: [id])
+  consentimentos       ConsentimentoLGPD[]
+  logsAuditoria        AuditLogPacienteModelo[]
+  
+  @@unique([cpf, eventoId])
+  @@index([eventoId])
+  @@index([criadoPor])
+  @@map("pacientes_modelo")
+}
+
+model ConsentimentoLGPD {
+  id             Int       @id @default(autoincrement())
+  entidadeTipo   String    @db.VarChar(50)
+  entidadeId     String    @db.Uuid
+  tipo           String    @db.VarChar(100)
+  aceito         Boolean
+  timestamp      DateTime  @db.Timestamp()
+  ip             String    @db.VarChar(45)
+  userAgent      String    @db.Text
+  criadoEm       DateTime  @default(now()) @db.Timestamp()
+  
+  pacienteModelo PacienteModelo? @relation(fields: [entidadeId], references: [id], onDelete: Cascade, map: "fk_consentimento_paciente")
+  
+  @@index([entidadeId, entidadeTipo])
+  @@map("consentimentos_lgpd")
+}
+
+enum TipoEventoAuditPaciente {
+  PACIENTE_MODELO_CRIADO
+  PACIENTE_MODELO_VISUALIZADO
+  PACIENTE_MODELO_EDITADO
+  PACIENTE_MODELO_EXCLUIDO
+  ACESSO_PACIENTES_MODELO
+  DOCUMENTOS_PACIENTE_ACESSADOS
+  CONSENTIMENTO_REGISTRADO
+}
+
+model AuditLogPacienteModelo {
+  id                   Int                        @id @default(autoincrement())
+  timestamp            DateTime                   @default(now()) @db.Timestamp()
+  usuarioId            String                     @db.Uuid
+  usuarioNome          String                     @db.VarChar(200)
+  usuarioPerfil        PerfilUsuario
+  ipOrigem             String                     @db.VarChar(45)
+  userAgent            String                     @db.Text
+  acao                 TipoEventoAuditPaciente
+  pacienteModeloId     String?                    @db.Uuid
+  pacienteModeloNome   String?                    @db.VarChar(200)
+  eventoId             String?                    @db.Uuid
+  detalhes             Json?
+  hashAnterior         String                     @db.VarChar(64)
+  hash                 String                     @unique @db.VarChar(64)
+  
+  usuario              Usuario                    @relation(fields: [usuarioId], references: [id], onDelete: Restrict)
+  pacienteModelo       PacienteModelo?            @relation(fields: [pacienteModeloId], references: [id], onDelete: Restrict)
+  
+  @@index([timestamp(sort: Desc)])
+  @@index([usuarioId])
+  @@index([pacienteModeloId])
+  @@index([acao])
+  @@map("audit_log_pacientes_modelo")
+}
+
+// ============================================
+// EP-06: SISTEMA DE COMUNICAÇÃO
+// ============================================
+
+model TemplateEmail {
+  id          String    @id @default(uuid()) @db.Uuid
+  nome        String    @unique @db.VarChar(100)
+  descricao   String?   @db.Text
+  assunto     String    @db.VarChar(255)
+  corpo       String    @db.Text
+  variaveis   Json
+  ativo       Boolean   @default(true)
+  criadoEm    DateTime  @default(now()) @db.Timestamp()
+  atualizadoEm DateTime @updatedAt @db.Timestamp()
+  
+  gatilhos    GatilhoConfig[]
+  
+  @@map("templates_email")
+}
+
+enum TipoTiming {
+  IMEDIATO
+  DIAS_ANTES
+  DIAS_DEPOIS
+}
+
+model GatilhoConfig {
+  id           String      @id @default(uuid()) @db.Uuid
+  nome         String      @unique @db.VarChar(100)
+  descricao    String      @db.Text
+  ativo        Boolean     @default(true)
+  templateId   String      @db.Uuid
+  timingTipo   TipoTiming
+  timingValor  Int?
+  criadoEm     DateTime    @default(now()) @db.Timestamp()
+  atualizadoEm DateTime    @updatedAt @db.Timestamp()
+  
+  template     TemplateEmail @relation(fields: [templateId], references: [id])
+  
+  @@index([ativo])
+  @@map("gatilhos_config")
+}
+
+model EmailQueueLog {
+  id            Int       @id @default(autoincrement())
+  jobId         String?   @db.VarChar(100)
+  destinatario  String    @db.VarChar(255)
+  assunto       String    @db.Text
+  gatilhoId     String?   @db.Uuid
+  messageId     String?   @db.VarChar(255)
+  tentativa     Int
+  sucesso       Boolean
+  erro          String?   @db.Text
+  metadados     Json?
+  timestamp     DateTime  @default(now()) @db.Timestamp()
+  
+  @@index([destinatario])
+  @@index([timestamp(sort: Desc)])
+  @@index([gatilhoId])
+  @@index([sucesso])
+  @@map("email_queue_log")
+}
+
+model LembreteEnviado {
+  id                  Int      @id @default(autoincrement())
+  eventoId            String   @db.Uuid
+  tipo                String   @db.VarChar(50)
+  quantidadeEnviados  Int
+  dataEnvio           DateTime @db.Date
+  criadoEm            DateTime @default(now()) @db.Timestamp()
+  
+  @@unique([eventoId, tipo, dataEnvio])
+  @@index([eventoId])
+  @@index([dataEnvio])
+  @@map("lembretes_enviados")
+}
